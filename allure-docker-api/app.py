@@ -2,6 +2,8 @@ from flask import Flask, jsonify, render_template, send_file, request
 from flask_swagger_ui import get_swaggerui_blueprint
 from subprocess import call
 import os, uuid, glob, json, base64
+import docker
+
 app = Flask(__name__)
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
@@ -18,6 +20,16 @@ DEFAULT_TEMPLATE = 'default.html'
 CSS = "https://stackpath.bootstrapcdn.com/bootswatch/4.3.1/cosmo/bootstrap.css"
 SERVER_URL = "http://localhost:" + os.environ['PORT']
 TITLE = "Emailable Report"
+
+#### AUTOMATUION ######
+
+AUTOMATION_IMAGE = "docker-registry.wibbitz.com/qa-automation:latest"
+AUTOMATION_COMMAND = "npm run wdio -- --suite studio"
+AUTOMATION_ENV = os.environ['ENV_NAME']
+AUTOMATION_MAX_INSTANCES = os.environ.get('MAX_INSTANCES', 5)
+AUTOMATION_PRODUCT = os.environ.get('PRODUCT', 'studio')
+AUTOMATION_NODE_ENV = os.environ.get('NODE_ENV', 'stage')
+
 
 if "EMAILABLE_REPORT_CSS_CDN" in os.environ:
     app.logger.info('Overriding CSS')
@@ -74,6 +86,65 @@ def version():
         resp.status_code = 200
 
     return resp
+
+@app.route("/run")
+def run():
+    try:
+
+        client = docker.from_env()
+        client.images.pull("{}".format(AUTOMATION_IMAGE))
+        if client.containers.list(filters={'name':'automation'}):
+            client.containers.remove("automation")
+        call([CLEAN_RESULTS_PROCESS])
+        client.containers.run("{}".format(AUTOMATION_IMAGE), "{}".format(AUTOMATION_COMMAND), detach=True, environment=["envName={}".format(AUTOMATION_ENV), "maxInstances={}".format(AUTOMATION_MAX_INSTANCES), "product={}".format(AUTOMATION_PRODUCT), "NODE_ENV={}".format(AUTOMATION_NODE_ENV)], name="automation", mounts=[{'target': '/home/jenkins/e2eAutomation/allure-results', 'source': '/home/ubuntu/allure-results', 'type': 'bind'}])
+    except Exception as ex:
+        body = {
+            'meta_data': {
+                'message' : str(ex)
+            }
+        }
+        resp = jsonify(body)
+        resp.status_code = 400
+    else:
+        body = {
+            'data': {
+                'stream-logs-url': "http://dev-{}.vir.wibbitz.tv:5050/logs".format(AUTOMATION_ENV) 
+            },
+            'meta_data': {
+                'message' : "Automation start running"
+            }
+        }
+        resp = jsonify(body)
+        resp.status_code = 200
+    
+    return resp
+
+@app.route("/logs")
+def logs():
+    lines = request.args.get('lines', default = 20, type = int)
+    try:
+        client = docker.from_env()
+        container = client.containers.get('automation')
+        logs = (container.logs(tail="{}".format(lines))).decode("utf-8")
+        status = container.status
+    except Exception as ex:
+        body = {
+            'meta_data': {
+                'message' : str(ex)
+            }
+        }
+        resp = jsonify(body)
+        resp.status_code = 400
+    else:
+        body = {
+             'meta_data': {
+                 'Automation Container Status' : "{}".format(status)
+             }
+        }
+        resp = jsonify(body)
+        resp.status_code = 200
+    
+    return resp, logs
 
 @app.route("/send-results", methods=['POST'])
 def send_results():
