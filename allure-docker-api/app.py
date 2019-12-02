@@ -3,6 +3,7 @@ from flask_swagger_ui import get_swaggerui_blueprint
 from subprocess import call
 import os, uuid, glob, json, base64
 import docker
+import datetime
 
 app = Flask(__name__)
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
@@ -93,10 +94,11 @@ def run():
 
         client = docker.from_env()
         client.images.pull("{}".format(AUTOMATION_IMAGE))
-        if client.containers.list(filters={'name':'automation'}):
-            client.containers.remove("automation")
+        if client.containers.list(all=True, filters={'name':'automation'}):
+            client.containers.prune()
         call([CLEAN_RESULTS_PROCESS])
         client.containers.run("{}".format(AUTOMATION_IMAGE), "{}".format(AUTOMATION_COMMAND), detach=True, environment=["envName={}".format(AUTOMATION_ENV), "maxInstances={}".format(AUTOMATION_MAX_INSTANCES), "product={}".format(AUTOMATION_PRODUCT), "NODE_ENV={}".format(AUTOMATION_NODE_ENV)], name="automation", mounts=[{'target': '/home/jenkins/e2eAutomation/allure-results', 'source': '/home/ubuntu/allure-results', 'type': 'bind'}])
+        start_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     except Exception as ex:
         body = {
             'meta_data': {
@@ -110,6 +112,7 @@ def run():
             'data': {
                 'stream-logs-url': "http://dev-{}.vir.wibbitz.tv:5050/logs".format(AUTOMATION_ENV) 
             },
+            'start time': "{}".format(start_time),
             'meta_data': {
                 'message' : "Automation start running"
             }
@@ -144,7 +147,7 @@ def logs():
         resp = jsonify(body)
         resp.status_code = 200
     
-    return resp, logs
+    return resp, logs.encode('ascii', 'ignore').decode('ascii')
 
 @app.route("/send-results", methods=['POST'])
 def send_results():
